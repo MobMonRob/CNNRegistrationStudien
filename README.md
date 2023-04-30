@@ -14,7 +14,7 @@ ResUNet is a neural network architecture that combines the idea of residual netw
 
 In the context of the FCGF model, ResUNet is used to extract features from the point cloud data, which are then used to perform geometric matching and registration tasks. 
 
-For the registration of two point clouds we use the ICP (Iterative Closest Point) algorithm. The algorithm finds corresponding points in two point clouds, estimates a rigid transformation that aligns the moving point cloud to the fixed point cloud, and iteratively refines the transformation until convergence. The overall idea of ICP is to minimize the distance between the corresponding points in the two point clouds.
+For the transformation of two point clouds we use RANSAC (RANdom SAmple Consensus). The latter is an iterative algorithm used in image processing. In the context of alignment for two point clouds, RANSAC can be used to estimate the transformation that aligns the two point clouds. The algorithm works by randomly selecting a subset of points from each point cloud and estimating the transformation parameters using only those points. The algorithm then checks how many of the remaining points in each point cloud can be aligned within a certain error threshold using the estimated transformation. If enough points are aligned, the algorithm accepts the transformation and proceeds to the next iteration. If not enough points are aligned, the algorithm rejects the transformation and selects a new random subset of points.
 
 FCGF was introduced in a paper called "Fully Convolutional Geometric Features" by Panos Achlioptas, Olga Diamanti, Ioannis Mitliagkas, and Leonidas Guibas, which was presented at the Conference on Computer Vision and Pattern Recognition (CVPR) in 2019.
 
@@ -32,6 +32,13 @@ FCGF was introduced in a paper called "Fully Convolutional Geometric Features" b
 ## Setting up the requirements
 
 The project was implemented on Google Colab. To set up the project open the Jupyter Notebook (FCGF.ipynb) and follow the steps.
+
+## Google Colab Notebooks
+- [Registration 3DMatch Redkitchen](https://colab.research.google.com/drive/18R0UglTyjtZcegRb-A8-ieGraI4rsadh?usp=sharing) - Trying the demo data from the 3DMatch data set
+- [Registration vol. 1](https://colab.research.google.com/drive/19u5E32n9LTDNN-sqL8L3l6RfttYDEnHk?usp=sharing) - First try to align 2 point clouds of 2 objects (Ruler, Headphones). The attempt was unsuccessful due to too much background noise.
+- [Registration vol. 2](https://colab.research.google.com/drive/132SF2-W2Ezjf7kH1i--MCxR-jxQWUH8b?usp=sharing) - Alignment of 3 different objects (R2D2, Drone, Rabbit). The overlap between the respective 2 point clouds was 90%, 60%, 30%.  
+- [Registration vol. 3](https://colab.research.google.com/drive/1DxmUaRtG2BIG90KQW-kvCEOIygV5L1zh?usp=sharing) - Alignment of 5 different objects (Backpack, Fanny pack, Shoes, Keyboard, Skeleton). The overlap between the respective 2 point clouds was 60%, 30%, 10%, 5%.
+
 
 ## Fully Convolutional Geometric Features, ICCV, 2019
 
