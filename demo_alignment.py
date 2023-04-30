@@ -1,4 +1,3 @@
-# Copy in demo_alignment.py
 import os
 import math
 import numpy as np
@@ -8,11 +7,9 @@ import MinkowskiEngine as ME
 import torch
 import typing as t
 import util.transform_estimation as te
-import plotly.graph_objects as go
 
 from urllib.request import urlretrieve
 from model.resunet import ResUNetBN2C
-from util.visualization import get_colored_point_cloud_feature
 from lib.eval import find_nn_gpu
 
 if not os.path.isfile('ResUNetBN2C-16feat-3conv.pth'):
@@ -21,13 +18,8 @@ if not os.path.isfile('ResUNetBN2C-16feat-3conv.pth'):
         "https://node1.chrischoy.org/data/publications/fcgf/2019-09-18_14-15-59.pth",
         'ResUNetBN2C-16feat-3conv.pth')
 
-if not os.path.isfile('redkitchen-20.ply'):
-    print('Downloading a mesh...')
-    urlretrieve("https://node1.chrischoy.org/data/publications/fcgf/redkitchen-20.ply",
-                'redkitchen-20.ply')
-
-NN_MAX_N = 500
-SUBSAMPLE_SIZE = 10000
+NN_MAX_N = 2500
+SUBSAMPLE_SIZE = 15000
 
 
 def points_to_pointcloud(
@@ -72,70 +64,22 @@ def int_to_rgb(val: int, min_val: int = 11, max_val: int = 48, norm: bool = True
         b /= 255
     return [r, g, b]
 
-
-def draw_tensor_points(
-        tensors: t.List[t.Union[np.ndarray, torch.Tensor]],
-        extract_points: bool = False,
-        uniform_color: bool = True,
-        color_arrays: t.Optional[t.List[t.Union[np.ndarray, list]]] = None,
-        min_color: t.Optional[float] = 11,
-        max_color: t.Optional[float] = 48,
-) -> None:
-    """
-    :param tensors: list of tensor, either numpy or torch with each having a shape of (N, 3) or (N, 4)
-    :param extract_points: bool, to extract the points (N, 0:3)
-    :param uniform_color: bool, apply uniform color
-    :param color_arrays: (optional) list of np.ndarray or list of shape (N, 1) that contains point color
-    :param min_color: (optional) float of min color for colormap
-    :param max_color: (optional) float of max color for colormap
-    :return:
-    """
-    if not isinstance(tensors, list):
-        tensors = [tensors]
-    if not isinstance(color_arrays, list):
-        color_arrays = [color_arrays]
-
-    if len(color_arrays) < len(tensors):
-        color_arrays += [None] * (len(tensors) - len(color_arrays))
-
-    pcd_list = []
-    for tt, ca in zip(tensors, color_arrays):
-        if isinstance(tt, torch.Tensor):
-            tt = tt.clone().numpy()
-        elif isinstance(tt, np.ndarray):
-            tt = tt.copy()
-        else:
-            raise ValueError(
-                "Tensor type not supported, should be torch.Tensor or np.ndarray"
-            )
-        np_points = np.squeeze(tt)
-        if extract_points:
-            np_points = np_points[:, 0:3]
-        pcd_temp = points_to_pointcloud(np_points)
-        if uniform_color and ca is None:
-            pcd_temp.paint_uniform_color(list(np.random.uniform(size=3)))
-        elif ca is not None:
-            if min_color is None:
-                min_color = np.min(ca)
-            if max_color is None:
-                max_color = np.max(ca)
-            colors = np.asarray(
-                [int_to_rgb(i, min_val=min_color, max_val=max_color) for i in ca]
-            )
-            pcd_temp.colors = o3d.utility.Vector3dVector(colors)
-        pcd_list.append(pcd_temp)
-    o3d.visualization.draw_geometries(pcd_list)
-
-
 def apply_transformation(
         points: t.Union[np.ndarray, torch.Tensor],
         transformation: t.Union[np.ndarray, torch.Tensor],
+        padding: float = 0.3, # add 30 cm padding in all directions
 ) -> t.Union[np.ndarray, torch.Tensor]:
     """
     :param points: tensor of shape (N, 3) representing floating point coordinates
     :param transformation: (4, 4) tensor of a transformation matrix
     :return: transformed points
     """
+
+    # add padding to the input points
+    points[:, 0] += padding
+    points[:, 1] += padding
+    points[:, 2] += padding
+
     if all(isinstance(i, np.ndarray) for i in [points, transformation]):
         transformed_points = np.matmul(
             transformation,
@@ -159,13 +103,14 @@ def apply_transformation(
 def find_corr(xyz0, xyz1, F0, F1, subsample_size=-1):
     subsample = len(F0) > subsample_size
     if subsample_size > 0 and subsample:
+        # amount of points in F0 and F1
         N0 = min(len(F0), subsample_size)
         N1 = min(len(F1), subsample_size)
         inds0 = np.random.choice(len(F0), N0, replace=False)
         inds1 = np.random.choice(len(F1), N1, replace=False)
         F0, F1 = F0[inds0], F1[inds1]
 
-    # Compute the nn
+    # Compute the nn, until all neighbours are found
     nn_inds = find_nn_gpu(F0, F1, nn_max_n=NN_MAX_N)
     if subsample_size > 0 and subsample:
         return xyz0[inds0], xyz1[inds1[nn_inds]]
@@ -185,100 +130,88 @@ def demo_alignment(config):
     model.eval()
     model = model.to(device)
 
-    input_pcd = o3d.io.read_point_cloud(config.input)
-    # create fixed input (points and features)
-    fixed_xyz = np.array(input_pcd.points)
-    fixed_feats = np.ones((len(fixed_xyz), 1))
 
-    # create moving input (points and features)
-    moving_xyz = np.array(input_pcd.points)
-    moving_feats = np.ones((len(fixed_feats), 1))
+    # create input1 input (points and features)
+    input1_pcd = o3d.io.read_point_cloud(config.input1)
+    input1_xyz = np.array(input1_pcd.points)
+    input1_feats = np.ones((len(input1_xyz), 1))
 
-    # randomly transform moving input
-    random_transform = np.array(
-        [[0.57620317, 0.68342775, -0.44823694, 2.4],
-         [0.20656687, -0.65240175, -0.729179, 1.0],
-         [-0.7907718, 0.3275644, -0.5170895, 3.9],
-         [0., 0., 0., 1.]]
-    )
-    # draw_tensor_points([moving_xyz, apply_transformation(moving_xyz.copy(), random_transform)])
-    moving_xyz = apply_transformation(moving_xyz, random_transform)
 
-    # create fixed sparse tensor and model features
+    # create input2 input (points and features)
+    input2_pcd = o3d.io.read_point_cloud(config.input2)
+    input2_xyz = np.array(input2_pcd.points)
+    input2_feats = np.ones((len(input2_xyz), 1))
+
+    # create input1 sparse tensor and model features
     # voxelize xyz and feats
-    fixed_coords = np.floor(fixed_xyz / voxel_size)
-    fixed_coords, fixed_inds = ME.utils.sparse_quantize(fixed_coords, return_index=True)
+    input1_coords = np.floor(input1_xyz / voxel_size)
+    input1_coords, input1_inds = ME.utils.sparse_quantize(input1_coords, return_index=True)
     # convert to batched coords compatible with ME
-    fixed_coords = ME.utils.batched_coordinates([fixed_coords])
-    fixed_unique_xyz = fixed_xyz[fixed_inds]
-    fixed_feats = fixed_feats[fixed_inds]
-    fixed_tensor = ME.SparseTensor(
-        torch.tensor(fixed_feats, dtype=torch.float32),
-        coordinates=torch.tensor(fixed_coords, dtype=torch.int32),
+    input1_coords = ME.utils.batched_coordinates([input1_coords])
+    input1_unique_xyz = input1_xyz[input1_inds]
+    input1_feats = input1_feats[input1_inds]
+    input1_tensor = ME.SparseTensor(
+        torch.tensor(input1_feats, dtype=torch.float32),
+        coordinates=torch.tensor(input1_coords, dtype=torch.int32),
         device=device
     )
 
-    # create moving sparse tensor and model features
-    moving_coords = np.floor(moving_xyz / voxel_size)
-    moving_coords, moving_inds = ME.utils.sparse_quantize(moving_coords, return_index=True)
+    # create input2 sparse tensor and model features
+    input2_coords = np.floor(input2_xyz / voxel_size)
+    input2_coords, input2_inds = ME.utils.sparse_quantize(input2_coords, return_index=True)
     # convert to batched coords compatible with ME
-    moving_coords = ME.utils.batched_coordinates([moving_coords])
-    moving_unique_xyz = moving_xyz[moving_inds]
-    moving_feats = moving_feats[moving_inds]
-    moving_tensor = ME.SparseTensor(
-        torch.tensor(moving_feats, dtype=torch.float32),
-        coordinates=torch.tensor(moving_coords, dtype=torch.int32),
+    input2_coords = ME.utils.batched_coordinates([input2_coords])
+    input2_unique_xyz = input2_xyz[input2_inds]
+    input2_feats = input2_feats[input2_inds]
+    input2_tensor = ME.SparseTensor(
+        torch.tensor(input2_feats, dtype=torch.float32),
+        coordinates=torch.tensor(input2_coords, dtype=torch.int32),
         device=device
     )
-
-    # visualize inputs to be aligned
-    # draw_tensor_points([fixed_unique_xyz, moving_unique_xyz])
-
-    # set headless mode to True
-    o3d.visualization.webrtc_server.is_headless = True
 
     # save the aligned point clouds to PLY files
-    o3d.io.write_point_cloud('fixed.ply', points_to_pointcloud(fixed_unique_xyz))
-    o3d.io.write_point_cloud('moving.ply', points_to_pointcloud(moving_unique_xyz))
+    o3d.io.write_point_cloud('input1.ply', points_to_pointcloud(input1_unique_xyz))
+    o3d.io.write_point_cloud('input2.ply', points_to_pointcloud(input2_unique_xyz))
 
 
     # get model features of inputs
-    fixed_model_feats = model(fixed_tensor).F
-    moving_model_feats = model(moving_tensor).F
+    input1_model_feats = model(input1_tensor).F
+    input2_model_feats = model(input2_tensor).F
 
     # compute correspondences and alignment
     xyz0_corr, xyz1_corr = find_corr(
-        torch.tensor(moving_unique_xyz, dtype=torch.float32).to(device),
-        torch.tensor(fixed_unique_xyz, dtype=torch.float32).to(device),
-        moving_model_feats,
-        fixed_model_feats,
+        torch.tensor(input2_unique_xyz, dtype=torch.float32).to(device),
+        torch.tensor(input1_unique_xyz, dtype=torch.float32).to(device),
+        input2_model_feats,
+        input1_model_feats,
         subsample_size=SUBSAMPLE_SIZE,
     )
     xyz0_corr, xyz1_corr = xyz0_corr.cpu(), xyz1_corr.cpu()
 
-    # estimate transformation using the correspondences
+    # estimate transformation using the correspondences,  robuste quadratisch-lineare Transformation, it also uses ranasac for the transformation
     est_transformation = te.est_quad_linear_robust(xyz0_corr, xyz1_corr)
 
-    # transform moving points
-    aligned_xyz = apply_transformation(moving_xyz.copy(), est_transformation.numpy())
-
-    # set headless mode to True
-    o3d.visualization.webrtc_server.is_headless = True
+    aligned_input2 = apply_transformation(input2_xyz.copy(), est_transformation.numpy())
 
     # save the aligned point clouds to PLY files
-    o3d.io.write_point_cloud('fixed_aligned.ply', points_to_pointcloud(fixed_xyz))
-    o3d.io.write_point_cloud('moving_aligned.ply', points_to_pointcloud(aligned_xyz))
-
+    o3d.io.write_point_cloud('input1_aligned.ply', points_to_pointcloud(input1_xyz))
+    o3d.io.write_point_cloud('input2_aligned.ply', points_to_pointcloud(aligned_input2))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '-i',
-        '--input',
-        default='redkitchen-20.ply',
+        '-i1',
+        '--input1',
+        default='/path/to/file',
         type=str,
-        help='path to a pointcloud file')
+        help='/path/to/file')
+    parser.add_argument(
+        '-i2',
+        '--input2',
+        default='/path/to/file',
+        type=str,
+        help='/path/to/file')
     parser.add_argument(
         '-m',
         '--model',
@@ -287,7 +220,7 @@ if __name__ == '__main__':
         help='path to latest checkpoint (default: None)')
     parser.add_argument(
         '--voxel_size',
-        default=0.025,
+        default=0.4, # needs to correspond to the voxel size used in downsampling
         type=float,
         help='voxel size to preprocess point cloud')
 
